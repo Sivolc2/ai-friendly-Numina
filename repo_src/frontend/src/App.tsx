@@ -1,76 +1,289 @@
-import React, { useState } from 'react';
+import { useState, useMemo, useEffect, Suspense, lazy } from 'react';
+import { Directory } from './components/Directory';
+import { ProfileView } from './components/ProfileView';
+import { CommunityView } from './components/CommunityView';
+import { CommunityList } from './components/CommunityList';
+import { UserProfile } from './components/UserProfile';
+import { Settings } from './components/Settings';
+import { BottomNavigation } from './components/BottomNavigation';
+import { AccessDenied } from './components/AccessDenied';
+import { Header } from './components/Header';
+import { LoadingSpinner } from './components/LoadingSpinner';
+import { DirectoryShell } from './components/DirectoryShell';
+import { PhotoSlideshow } from './components/PhotoSlideshow';
 
-// Simple demo components
-const WelcomeScreen: React.FC = () => (
-  <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-    <div className="text-center text-white">
-      <h1 className="text-6xl font-bold mb-4">AI-Friendly Numina</h1>
-      <p className="text-xl mb-8">Social networking and community platform</p>
-      <div className="space-x-4">
-        <button className="bg-white text-blue-600 px-6 py-3 rounded-lg font-semibold hover:bg-gray-100 transition-colors">
-          Get Started
-        </button>
-        <button className="border border-white text-white px-6 py-3 rounded-lg font-semibold hover:bg-white hover:text-blue-600 transition-colors">
-          Learn More
-        </button>
-      </div>
-    </div>
-  </div>
-);
+// Lazy load ChatPage for better performance
+const ChatPage = lazy(() => import('./components/ChatPage').then(module => ({ default: module.ChatPage })));
 
-const DirectoryView: React.FC = () => (
-  <div className="min-h-screen bg-gray-50">
-    <header className="bg-white shadow-sm">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between items-center py-4">
-          <h1 className="text-2xl font-bold text-gray-900">Directory</h1>
-          <div className="flex space-x-4">
-            <input
-              type="text"
-              placeholder="Search profiles..."
-              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            <button className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-              Search
-            </button>
-          </div>
-        </div>
-      </div>
-    </header>
+// Import performance testing for development
+import './utils/performanceTest';
 
-    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {[1, 2, 3, 4, 5, 6].map((i) => (
-          <div key={i} className="bg-white rounded-lg shadow-md p-6">
-            <div className="w-20 h-20 bg-gray-300 rounded-full mx-auto mb-4"></div>
-            <h3 className="text-lg font-semibold text-center mb-2">Profile {i}</h3>
-            <p className="text-gray-600 text-center mb-4">Sample description for profile {i}</p>
-            <button className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors">
-              View Profile
-            </button>
-          </div>
-        ))}
-      </div>
-    </main>
-  </div>
-);
+// Lazy load heavy components
+const AdminDashboard = lazy(() => import('./components/AdminDashboard').then(module => ({ default: module.AdminDashboard })));
+const UploadFlow = lazy(() => import('./components/UploadFlow').then(module => ({ default: module.UploadFlow })));
+import { useProfiles } from './hooks/useProfiles';
+import { useCommunity } from './hooks/useCommunity';
+import { useAuth } from './contexts/AuthContext';
+import { useScrollToTop } from './hooks/useScrollToTop';
+import type { Profile, Community, Event, View } from './types';
 
-const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<'welcome' | 'directory'>('welcome');
+export default function App() {
+  return <AppContent />;
+}
 
-  const handleGetStarted = () => {
-    setCurrentView('directory');
+function AppContent() {
+  const [currentView, setCurrentView] = useState<View>(() => {
+    // Multiple mobile detection methods for better coverage
+    const userAgent = navigator.userAgent || navigator.vendor || (window as any).opera;
+    const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent);
+    const isMobileScreen = window.innerWidth <= 768;
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    const isMobile = isMobileUA || (isMobileScreen && isTouchDevice);
+
+    console.log('App: Enhanced mobile detection:', {
+      isMobile,
+      isMobileUA,
+      isMobileScreen,
+      isTouchDevice,
+      screenWidth: window.innerWidth,
+      userAgent: userAgent.substring(0, 100) + '...'
+    });
+
+    // Check for URL override first - highest priority
+    const urlParams = new URLSearchParams(window.location.search);
+    const viewParam = urlParams.get('view');
+    if (viewParam === 'discover') {
+      console.log('App: URL override to discover view');
+      return 'discover';
+    }
+    if (viewParam === 'slideshow') {
+      console.log('App: URL override to slideshow view');
+      return 'slideshow';
+    }
+
+    // Check if slideshow is set as default
+    const slideshowDefault = localStorage.getItem('slideshowDefault');
+    if (slideshowDefault === null) {
+      // For mobile OR small screens, default to discover; for desktop, default to slideshow
+      const defaultView = isMobile ? 'discover' : 'slideshow';
+      localStorage.setItem('slideshowDefault', isMobile ? 'false' : 'true');
+      console.log('App: Setting default view for', isMobile ? 'mobile' : 'desktop', ':', defaultView);
+      return defaultView;
+    }
+    // Start directly with slideshow if it's the default, otherwise discover
+    const finalView = slideshowDefault === 'true' ? 'slideshow' : 'discover';
+    console.log('App: Using localStorage setting:', finalView);
+    return finalView;
+  });
+  const [selectedProfile, setSelectedProfile] = useState<Profile | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  // const [profileCompletionId, setProfileCompletionId] = useState<string | null>(null);
+  // const [invitationCode, setInvitationCode] = useState<string | null>(null);
+  const [chatTargetProfileId, setChatTargetProfileId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedFilters, setSelectedFilters] = useState<string[]>([]);
+  const { profiles, loading: profilesLoading, fetchProfiles } = useProfiles();
+  const { communities, fetchCommunities } = useCommunity();
+  const events = communities; // Legacy alias for backward compatibility
+  const loading = profilesLoading; // Use profiles loading as main loading state
+  const { user, isAdmin, isPhotographer } = useAuth();
+
+  // Auto-scroll to top when currentView changes - skip for profile completion to avoid conflicts
+  useScrollToTop([currentView], {
+    smooth: false,
+    skip: currentView === 'complete-profile' || currentView === 'edit-profile'
+  });
+
+  const allAvailableTags = useMemo(() => {
+    const tagSet = new Set<string>();
+    events.forEach(event => {
+      event.tags.forEach(tag => tagSet.add(tag));
+    });
+    return Array.from(tagSet).sort();
+  }, [events]);
+
+  // Load initial data - profiles first for faster perceived performance
+  useEffect(() => {
+    fetchProfiles(); // Critical path - load immediately
+
+    // Load events in background after a short delay
+    const eventsTimer = setTimeout(() => {
+      fetchCommunities();
+    }, 100); // 100ms delay to prioritize profiles
+
+    return () => clearTimeout(eventsTimer);
+  }, [fetchProfiles, fetchCommunities]);
+
+  const handleViewProfile = async (profile: Profile) => {
+    setSelectedProfile(profile);
+    setCurrentView('profile');
   };
 
-  if (currentView === 'welcome') {
+  const handleViewCommunity = (community: Community) => {
+    setSelectedEvent(community);
+    setCurrentView('community');
+  };
+
+  const handleBackToDirectory = () => {
+    setCurrentView('discover');
+    setSelectedProfile(null);
+    setSelectedEvent(null);
+    // setProfileCompletionId(null);
+    window.history.replaceState({}, document.title, window.location.pathname);
+
+    // Ensure scroll to top when going back
+    setTimeout(() => window.scrollTo(0, 0), 50);
+  };
+
+  const renderCurrentView = () => {
+    console.log('=== RENDERING VIEW ===');
+    console.log('currentView:', currentView);
+    console.log('loading:', loading);
+
+    // Show static shell immediately while data loads - much faster perceived performance
+    if (loading && currentView === 'directory') {
+      return <DirectoryShell />;
+    }
+
+    switch (currentView) {
+      case 'slideshow':
+        return (
+          <PhotoSlideshow
+            profiles={profiles}
+            events={events}
+            onViewProfile={handleViewProfile}
+            onOpenApp={() => setCurrentView('discover')}
+          />
+        );
+      case 'discover':
+      case 'directory':
+        return (
+          <Directory
+            profiles={profiles}
+            searchQuery={searchQuery}
+            selectedFilters={selectedFilters}
+            onSearchChange={setSearchQuery}
+            onFilterToggle={(filter: string) => {
+              setSelectedFilters(prev =>
+                prev.includes(filter)
+                  ? prev.filter(f => f !== filter)
+                  : [...prev, filter]
+              );
+            }}
+            onViewProfile={handleViewProfile}
+            loading={loading}
+          />
+        );
+      case 'community-list':
+        return (
+          <CommunityList
+            communities={events}
+            profiles={profiles}
+            onViewCommunity={handleViewCommunity}
+            loading={loading}
+          />
+        );
+      case 'user-profile':
+        return (
+          <UserProfile
+            onEditProfile={() => console.log('Edit profile')}
+            onNavigate={setCurrentView}
+          />
+        );
+      case 'settings':
+        return (
+          <Settings
+            onNavigate={setCurrentView}
+          />
+        );
+      case 'profile':
+        return selectedProfile ? (
+          <ProfileView
+            profile={selectedProfile}
+            onBack={handleBackToDirectory}
+            onNavigateToChat={(profileId) => {
+              console.log('App: Navigating to chat with profile:', profileId);
+              setChatTargetProfileId(profileId);
+              setCurrentView('messages');
+            }}
+          />
+        ) : null;
+      case 'community':
+        return selectedEvent ? (
+          <CommunityView
+            community={selectedEvent}
+            profiles={profiles.filter(p => p.eventId === selectedEvent.id)}
+            onBack={handleBackToDirectory}
+            onViewProfile={handleViewProfile}
+          />
+        ) : null;
+      case 'admin':
+        if (!user || !isAdmin) {
+          return <AccessDenied onBack={handleBackToDirectory} />;
+        }
+        return (
+          <Suspense fallback={<LoadingSpinner message="Loading admin dashboard..." />}>
+            <AdminDashboard onBack={handleBackToDirectory} />
+          </Suspense>
+        );
+      case 'upload':
+        if (!user || !isPhotographer) {
+          return <AccessDenied onBack={handleBackToDirectory} />;
+        }
+        return (
+          <Suspense fallback={<LoadingSpinner message="Loading upload interface..." />}>
+            <UploadFlow onBack={handleBackToDirectory} fetchProfiles={fetchProfiles} fetchEvents={fetchCommunities} allAvailableTags={allAvailableTags} events={events} />
+          </Suspense>
+        );
+      case 'messages':
+        if (!user) {
+          return <AccessDenied onBack={handleBackToDirectory} />;
+        }
+        return (
+          <Suspense fallback={<LoadingSpinner message="Loading messages..." />}>
+            <ChatPage
+              onNavigate={setCurrentView}
+              targetProfileId={chatTargetProfileId}
+              onTargetHandled={() => setChatTargetProfileId(null)}
+            />
+          </Suspense>
+        );
+      default:
+        return (
+          <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+            <div className="text-center">
+              <h1 className="text-4xl font-bold text-gray-900 mb-4">Welcome to AI-Friendly Numina</h1>
+              <p className="text-xl text-gray-600">Loading...</p>
+            </div>
+          </div>
+        );
+    }
+  };
+
+  // For slideshow, render fullscreen without header or bottom nav
+  if (currentView === 'slideshow') {
     return (
-      <div onClick={handleGetStarted}>
-        <WelcomeScreen />
+      <div className="min-h-screen bg-black">
+        {renderCurrentView()}
       </div>
     );
   }
 
-  return <DirectoryView />;
-};
-
-export default App;
+  // For all other views, use the normal layout with header and bottom navigation
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <Header
+        currentView={currentView}
+        onNavigate={setCurrentView}
+      />
+      <main className="pt-20 pb-20">
+        {renderCurrentView()}
+      </main>
+      <BottomNavigation
+        currentView={currentView}
+        onNavigate={setCurrentView}
+        unreadMessageCount={0}
+      />
+    </div>
+  );
+}
